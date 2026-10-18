@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Rally 3D — Original Nokia J2ME Game (browser port)</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1a1d21; height: 100%; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #wrap { position: relative; }
+  canvas { display: block; image-rendering: pixelated; position: absolute; top: 0; left: 0; }
+  #gl { z-index: 1; }
+  #ui { z-index: 2; touch-action: none; }
+  #boot {
+    position: absolute; inset: 0; z-index: 3;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #000; color: #ffffaa; font-family: Arial, sans-serif; text-align: center;
+  }
+  #boot h1 { font-size: 18px; letter-spacing: 2px; margin: 0 0 10px 0; }
+  #boot p { font-size: 11px; color: #888; margin: 4px; }
+  #bar { width: 140px; height: 8px; border: 1px solid #555; margin-top: 10px; }
+  #bar div { height: 100%; width: 0%; background: #ff0000; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="gl" width="240" height="320"></canvas>
+  <canvas id="ui" width="240" height="320"></canvas>
+  <div id="boot">
+    <h1>RALLY 3D</h1>
+    <p>Original Nokia J2ME game &middot; browser port</p>
+    <div id="bar"><div></div></div>
+    <p id="bootmsg">loading original assets...</p>
+  </div>
+</div>
+<script src="js/three.min.js?v=23"></script>
+<script src="js/data.js?v=23"></script>
+<script src="js/engine.js?v=23"></script>
+<script src="js/main.js?v=23"></script>
+<script src="js/scenes.js?v=23"></script>
+<script src="js/race.js?v=23"></script>
+<script>
+  const bar = document.querySelector('#bar div');
+  const msg = document.getElementById('bootmsg');
+  bar.style.width = '30%';
+  window.R3D.start().then(() => {
+    bar.style.width = '100%';
+    msg.textContent = 'ready - click / press a key';
+    const boot = document.getElementById('boot');
+    const hide = () => { boot.style.display = 'none'; window.removeEventListener('keydown', hide); };
+    setTimeout(hide, 600);
+    window.addEventListener('keydown', hide);
+    document.addEventListener('pointerdown', hide);
+  }).catch((e) => {
+    msg.textContent = 'load error: ' + e;
+    console.error(e);
+  });
+</script>
+</body>
+</html>
