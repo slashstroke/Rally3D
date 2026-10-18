@@ -5,7 +5,7 @@ directly in JavaScript + Three.js using the real assets extracted from your
 original jar — actual car model, textures, sprites, MIDI music, track data,
 UI text, medal times and unlock rules. No Java, no emulation, no camera bug.
 
-This build includes all gameplay fixes through **v9** (see changelog).
+This build includes all gameplay fixes through **v7** (see changelog).
 
 - **Camera follows the car** — authentic chase-cam lag (yaw lerps at /6 per
   frame like the original), the car itself moves and rotates while steering.
@@ -63,64 +63,56 @@ Touch zones are enabled automatically on phones/tablets.
 
 ## Changelog
 
-### v9
-- **"Pushed to the left" bug fixed for good** (reproducible shove a few seconds
-  into every race). Two defects in the boundary-wall port compounded:
-  the span check tested the *narrow* axis of each boundary edge instead of the
-  *dominant* one (making the check vacuous for track-aligned edges), and no
-  per-tile activation filter existed (the original only tests boundary edges of
-  tiles whose bounding box contains the car). Together they let the boundary
-  line of a tile the car had passed seconds earlier — e.g. the opening
-  straight that a later curve bends back towards, ~90u back along the path but
-  a few units away in space — cross the car via its infinite extension and
-  shove it sideways across the road, always at exactly the same spot.
-  Both guards are now ported from the original (dominant-axis span check +
-  per-tile AABB activation). Validated by simulation on all 12 tracks: the
-  port now produces *fewer* wall pushes than the original everywhere but one,
-  and no mid-road shoves at all.
-- **Car select: drag to spin** (a deliberate mod, not in the original game —
-  this port is a modified edition). Click and drag the car horizontally to
-  rotate it; on release it keeps the flick's momentum and then eases back into
-  the original's automatic 250 deg/s turntable spin. Touch screens keep the
-  original tap behaviour; the hint text on the screen marks the feature.
-
-### v8
-
-- **Menus aligned and symmetrical**:
-  - the screen header no longer overlaps the RALLY 3D logo art (it sits just
-    below it now);
-  - the championship trophy grid centres every row (the second row of a 6+4
-    grid no longer hangs on the left) and both rows clear the bottom bar;
-  - track-select padlocks line up in a fixed right-hand column (inline locks
-    used to make locked rows look off-centre), the 10 rows fit above the
-    bottom bar again, and the padlock icon is lighter and easier to read.
-
-### v7
-- **Floating road/grass slabs fixed**: the track renderer used double-sided
-  faces, so the UNDERSIDES of elevated sections showed against the sky as
-  stray patches of road and grass (most visible on Haze). The original
-  renderer culls back faces, so only the top side of every strip is drawn —
-  exactly what the port does now.
-- **"Car gets pushed sideways" fixed**: the port of the original boundary-wall
-  code flipped the push normal toward the local centreline; on some extent
-  transitions the boundary midpoint fell on the wrong side, inverted the test
-  and shoved the car across the track (the "pushed to the left a few seconds
-  after the start, always the same spot" bug). The push normal is now the
-  fixed outward normal from the original renderer (r.java), verified with a
-  wall-push scan on all 12 tracks: zero cross-track shoves, zero false
-  respawns.
+### v7 (current)
+- **"Pushed/dragged to one side" fixed (the invisible-wall misfire)**: the
+  port tested wall edges within a window that follows the track's ARC, so on
+  curved sections an edge from a completely different part of the track (up to
+  90 units away) could "block" the car and shove it sideways every frame —
+  the car felt dragged/pushed to one side and fought your steering. The
+  original only tests a tile's wall when one of the four wheels is inside
+  that tile's bounding box; the port now does exactly the same (verified:
+  Green mountain went from being pinned at tile 10 with 5191 wall pushes to
+  completing all 218 tiles with 20 normal touches).
+- **Trees/bushes below the road elevation no longer show through the road**:
+  the original draws each track section's props interleaved with the
+  far-to-near section rendering, so nearer hills overdraw farther sprites.
+  The port drew all props as a 2D layer on top of everything — trees standing
+  on lower ground appeared painted over the road ahead. Props are now
+  depth-tested 3D billboards inside the 3D scene (same sprites, same 6
+  distance sizes, same bottom anchor), so hills properly hide what is behind
+  them — per pixel, like a real 3D renderer.
+- **Distant track pieces no longer float in the sky (Haze/bridges)**: the
+  original only ever draws 6 tiles around the car (everything farther is the
+  2D background); the port drew the entire track, so far-away elevated
+  strands appeared as giant slabs floating above the horizon. The port now
+  renders the same 6-tile window (widened during the finish orbit), matching
+  the original's distance look.
+- **Menus: header no longer overlaps the RALLY 3D logo** on Select track /
+  High scores / Instructions / New game / Settings.
 
 ### v6
-- **Finish cinematic refined**: the orbit around the car is slower and eases
-  into a short HOLD on the car's front axis before the screen fades into the
-  results (orbit 2.9 s - hold 0.55 s - fade 0.6 s).
-- **Bridge rails are solid**: the invisible wall now sits at the rail base on
-  all bridge tiles (the original let wheels reach the rail, where no ground
-  exists, and respawned the car). Grind along the rails as long as you like.
-- **Roadside props (trees/bushes) are real 3D billboards now**: they live in
-  the depth buffer instead of being pasted over the frame, so trees below an
-  elevated section are properly hidden behind it and clip correctly at crests.
-  Sizes still follow the original's six distance frames, smoothly interpolated.
+- **Downhill bounce / vibration fixed**: on steep descents the road can dive
+  away faster than the suspension's gravity pulls the wheels down; the wheel
+  spring then entered a float -> slam -> float cycle (the car visibly bounced
+  and vibrated, pitch swinging +-15 degrees) and every float frame froze the
+  steering (the "less sensitive to controls" feel). Two changes:
+  1. *Downhill stick-assist* - when a falling wheel is only slightly above
+     ground that is descending faster than the wheel falls, it is glued to
+     the ground with the terrain's own descent rate, so the car rides steep
+     S-curve downhills smoothly. Real jumps (crests, summits) are untouched:
+     they leave the ground with upward speed and a growing gap, so they still
+     fly exactly like before.
+  2. *Control-freeze buffer* - the original zeroes steering the instant all
+     four wheels are off the ground; at 60fps the brief 1-2 frame ground
+     kisses kept resetting your steering. Controls now only freeze after ~3
+     consecutive airborne frames (real jumps), never on ground kisses.
+  Verified on a physics harness across all 12 tracks: full-airborne stretches
+  cut 30-80%, hard landings cut ~60%, crest jumps preserved.
+- **Car select: grab & spin** - click and drag the mouse in the car showroom
+  to rotate the car (it follows the cursor 1:1); on release it keeps the
+  flick's momentum, keeps spinning, and eases back into the classic 250 deg/s
+  auto-rotation. The showroom keeps its own identity on purpose - this port
+  is a modified game, not a 1:1 replica.
 
 ### v5
 - **Mountains, walls and bridges are truly continuous now** - two renderer

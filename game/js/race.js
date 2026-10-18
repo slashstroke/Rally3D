@@ -20,7 +20,6 @@ const TOPS = R3D.STAT_TOP;               // per-car top speed x10
 const KMH = 15, MPH = 9.5;               // display multipliers (original q.E / q.ak)
 
 const THEMES = R3D.themeColors;
-const TMPV = new THREE.Vector3();   // scratch for prop depth (camera forward)
 
 // sheet lookup: prop code -> sprite key (original bc[] mapping)
 function sheetKey(theme, code) {
@@ -31,6 +30,23 @@ function sheetKey(theme, code) {
   if (code === 5) return 'bb_shared_6';
   if (code === 6) return 'bb_shared_7';
   return null;
+}
+
+// one unit plane per sprite frame: bottom-anchored (translate +0.5y), UVs cut
+// to the frame rect in the sheet (canvas image, flipY texture => v = 1 - px/H)
+function makeSpriteGeos(key, spr) {
+  const img = R3D._sprImgs[key];
+  const iw = (img && img.width) || 256, ih = (img && img.height) || 256;
+  const geos = [];
+  for (let f = 0; f < 6; f++) {
+    const g = new THREE.PlaneGeometry(1, 1);
+    g.translate(0, 0.5, 0);
+    const u0 = spr.ox[f] / iw, u1 = (spr.ox[f] + spr.w[f]) / iw;
+    const vT = 1 - spr.oy[f] / ih, vB = 1 - (spr.oy[f] + spr.h[f]) / ih;
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([u0, vT, u1, vT, u0, vB, u1, vB], 2));
+    geos.push(g);
+  }
+  return geos;
 }
 
 const raceScene = {
@@ -44,44 +60,30 @@ const raceScene = {
   pos: new THREE.Vector3(), yaw: 0, speed: 0, steer: 0,
   roll: 0, pitch: 0,
   gH: [0, 0, 0, 0], sus: [0, 0, 0, 0], gJ: [0, 0, 0, 0],
-  segHint: 0, air: 0,
+  segHint: 0, air: 0, airT: 0,
   cpNext: 0, finished: false, wrongWay: false,
   azCnt: 0, cI: 0, coastT: 0, finishSeg: 0,
   doneT: 0, orbitFrom: 0,          // finish cinematic: orbit duration + start yaw
   splitText: '', splitColor: '#fff', splitT: 0,
+  paused: false, pauseSel: 0,      // simple pause menu (will be extended later)
 
   enter() {
     const ti = R3D.game.trackIdx;
     this.track = D.tracks[ti];
     this.theme = this.track.theme;
+    if (this._propGeos) for (const key in this._propGeos) for (const g of this._propGeos[key]) g.dispose();
+    this._propGeos = null;
     this.world = R3D.buildTrack(this.track);
     R3D.clearScene3d();
     const sc = new THREE.Scene();
-    sc.add(this.world.mesh);
+    for (const m of this.world.tileMeshes) sc.add(m);
     this.car = R3D.buildCar(R3D.game.carIdx);
     sc.add(this.car);
-    // Props as real depth-tested billboards: the original blitted them as 2D
-    // sprites over the finished frame (r.a(Graphics,...) has no occlusion
-    // test), so trees/bushes standing below an elevated section floated over
-    // it. Placed in the z-buffer they hide behind hills/bridges and clip
-    // correctly at crests, matching what the world should look like.
-    const pg = new THREE.PlaneGeometry(1, 1);
-    pg.translate(0, 0.5, 0);                  // origin at the bottom centre
-    this.propGeo = pg;
-    this.propMeshes = [];
-    for (const p of this.world.props) {
-      const key = sheetKey(this.theme, p.sheet);
-      if (!key || !D.sprites[key]) continue;
-      const m = new THREE.Mesh(pg, null);
-      m.position.set(p.x, p.y, p.z);
-      m.visible = false;
-      m.userData.prop = { p, key };
-      sc.add(m);
-      this.propMeshes.push(m);
-    }
+    this.buildPropBillboards(sc);
     R3D.scene3d = sc;
     this.tc = THEMES[this.theme];
     this.phase = 'prerace';
+    this.paused = false; this.pauseSel = 0;
     this.timeT = 0; this.cpNext = 0; this.finished = false;
     this.splitT = 0; this.goT = 0;
     this.checkpoints = this.track.checkpoints;
@@ -107,13 +109,22 @@ const raceScene = {
     this.speed = 0; this.steer = 0; this.roll = 0; this.pitch = 0;
     this.sus = [0, 0, 0, 0];
     this.segHint = i * 3;
+    this.tileIdx = i;   // render window + wall gate need the tile immediately
     // snap wheels to ground (original h(int))
     this.sampleWheels(0.0001, true);
     this.pos.y = (this.gH[0] + this.gH[1] + this.gH[2] + this.gH[3]) / 4;
-    this.air = 0;
+    this.air = 0; this.airT = 0;
   },
 
   update(dt) {
+    // ---- simple pause menu (racing / countdown only) ----
+    if (this.paused) { this.pauseInput(); return; }
+    if ((this.phase === 'racing' || this.phase === 'countdown') &&
+        (wasPressed('RS') || wasPressed('LS'))) {
+      this.paused = true; this.pauseSel = 0;
+      AudioSys.stopMusic();          // resume restarts the race music
+      return;
+    }
     if (this.phase === 'prerace') {
       if (wasPressed('F') || wasPressed('L')) {
         AudioSys.sfx('plink1');
@@ -162,19 +173,50 @@ const raceScene = {
     }
   },
 
+  // ---- pause menu input (items: Continue / Restart / Quit race) ----
+  pauseInput() {
+    if (wasPressed('U') || wasPressed('L')) this.pauseSel = (this.pauseSel + 2) % 3;
+    if (wasPressed('D') || wasPressed('R')) this.pauseSel = (this.pauseSel + 1) % 3;
+    if (wasPressed('RS')) { this.resumeRace(); return; }
+    if (wasPressed('F') || wasPressed('LS')) {
+      if (this.pauseSel === 0) this.resumeRace();
+      else if (this.pauseSel === 1) {          // restart from the pre-race screen
+        this.paused = false;
+        R3D.clearScene3d();
+        R3D.setScene(R3D.raceScene);
+      } else {                                 // quit to the mode's hub menu
+        this.paused = false;
+        R3D.clearScene3d();
+        R3D.setScene(R3D.game.mode === 'champ' ? R3D.nextRaceScene : R3D.trackSelectScene);
+      }
+    }
+  },
+
+  resumeRace() {
+    this.paused = false;
+    if (this.phase === 'racing') AudioSys.play('title', true, 0.85);
+  },
+
   // -------------------------------------------------- physics (original d(boolean))
   step(dt) {
     const car = R3D.game.carIdx;
     const top = TOPS[car] / 10;
     const F5 = dt * SPEED_K;
+    // control freeze buffer: the original zeroes steering the moment all four
+    // wheels leave the ground (ao == 4); at 60fps the brief 1-2 frame ground
+    // kisses on rolling terrain kept resetting the steering every few frames
+    // (the "less sensitive" feel). Only freeze after ~3 consecutive airborne
+    // frames - real jumps still freeze, kisses don't.
+    if (this.air === 4) this.airT += dt; else this.airT = 0;
+    const frozen = this.airT >= 0.05;
     // input frozen once finished (finish cinematic coast)
-    const gas = !this.finished && (R3D.keys.U || S().settings.auto === 1);
-    const brake = !this.finished && R3D.keys.D;
-    const left = !this.finished && R3D.keys.L, right = !this.finished && R3D.keys.R;
+    const gas = !this.finished && !frozen && (R3D.keys.U || S().settings.auto === 1);
+    const brake = !this.finished && !frozen && R3D.keys.D;
+    const left = !this.finished && !frozen && R3D.keys.L, right = !this.finished && !frozen && R3D.keys.R;
 
     // steering (original: 1.5 accumulate, 2.5 return, clamp +-6;
-    // frozen while airborne - ao < 4 gate means at least one wheel touched)
-    if (this.air < 4) {
+    // frozen while fully airborne for >3 frames - ao < 4 gate)
+    if (!frozen) {
       if (left && this.speed > 0.2) {
         this.steer -= 1.5 * F5;
         if (this.steer < -6) this.steer = -6;
@@ -191,7 +233,7 @@ const raceScene = {
     this.yaw += this.steer * F5;
 
     // speed (original: 0.25*(top-c)/10 gas, 0.3 brake, 0.14 offroad floor 1.0)
-    if (this.air < 4) {
+    if (!frozen) {
       if (brake) {
         this.speed -= 0.3 * F5;
         if (this.speed < 0) this.speed = 0;
@@ -235,36 +277,23 @@ const raceScene = {
   },
 
   // -------------------------------------------------- boundary wall (original a(o))
-  // Faithful port of h.java a(o): the boundary polyline is built per station
-  // pair with the original's F/D storage order (r.java a(int,a,a,a)):
-  //   RIGHT edge: F = prev station point, D = cur  (F->D along the travel)
-  //   LEFT  edge: F = cur station point,  D = prev (F->D against the travel)
-  // The push normal ag = perp(F - D) is FIXED by that order and always points
-  // OUTWARD on both sides - the original never re-orients it. (The old port
-  // flipped the normal toward the local centreline; on extent-sweep curves the
-  // boundary midpoint can fall on the wrong side, inverting the test and
-  // shoving the car ACROSS the track - the reported "pushed to the left".)
-  // For every boundary edge, if the wheel ring crosses it outwards, the car is
-  // pushed back by the outside wheel's penetration (S = f2 * ag, most negative
-  // f2 wins, one push per frame).
-  // Two guards taken from the original keep far-away edges inert:
-  //  1. tile activation (original o.a[] flags via the r.p AABB): a tile's
-  //     edges are only live while a wall-ring point is inside the tile's
-  //     outer-vertex bounding box. Without it the boundary line of a tile the
-  //     car passed seconds ago (a straight section that a later curve bends
-  //     back towards, ~90u back along the path but a few units away in space)
-  //     still crosses the ring via its INFINITE extension - the car got a
-  //     sideways shove at exactly the same spot of every lap.
-  //  2. dominant-axis span check (original compares |ag.z|>|ag.x|): the
-  //     crossing must land within the edge's LONG axis, not its narrow one -
-  //     testing the narrow axis made the check vacuous for track-aligned
-  //     edges (crossing.x == edge.x trivially) and let guard 1's leftovers
-  //     through.
+  // The original blocks the car with an invisible wall built from the per-tile
+  // extent points (profile col16, clamped by neighbours): for every boundary
+  // edge, if a wheel crosses it outwards, the car is pushed back inside by the
+  // penetration depth (S = f2 * ag, most negative f2 wins, one push per frame).
+  // ACTIVATION GATE (original b(o,b2)/a(o,b2) + u.p): a tile's wall edges are
+  // only tested when one of the four wheel points is inside that tile's
+  // outer-vertex bbox (r.p = min/max of H[0]/H[7] over the tile's 3 stations,
+  // x/z only). Edges are built PER TILE only (2 station pairs, r.java collects
+  // F/D pairs within the tile's own cross-sections) — testing beyond that lets
+  // a far-away edge's infinite line cross the wheel rectangle and shove the
+  // car sideways every frame.
   wallCollide() {
     const sts = this.world.stations;
-    const boxes = this.world.tileBoxes;
-    const n = sts.length;
-    const h0 = this.segHint || 0;
+    const bboxes = this.world.tileBboxes;
+    const nT = bboxes ? bboxes.length : 0;
+    const a = this.tileIdx;
+    if (!nT || a === undefined || a === null) return;
     const pts = [[2, 4], [-2, 4], [2, -4], [-2, -4]];
     const rad = this.yaw * Math.PI / 180;
     const cy = Math.cos(rad), sy = Math.sin(rad);
@@ -276,60 +305,67 @@ const raceScene = {
     const ring = [0, 1, 3, 2, 0];            // wheel rectangle walk (original bK)
     const bb = [0, 0, 0, 0, 0];
     let bestF = 0, pushX = 0, pushZ = 0;
-    const i0 = Math.max(0, h0 - 9), i1 = Math.min(n - 2, h0 + 8);
-    for (let i = i0; i <= i1; i++) {
-      const sa = sts[i], sb = sts[i + 1];
-      if (boxes) {
-        const box = boxes[sa.ti];
-        let inside = false;
-        for (let k = 0; k < 4; k++) {
-          if (wx[k] >= box.minx && wx[k] <= box.maxx && wz[k] >= box.minz && wz[k] <= box.maxz) { inside = true; break; }
-        }
-        if (!inside) continue;
+    const t0 = Math.max(0, a - 7), t1 = Math.min(nT - 1, a + 7);
+    for (let t = t0; t <= t1; t++) {
+      const bx = bboxes[t];
+      let active = false;
+      for (let k = 0; k < 4 && !active; k++) {
+        active = wx[k] >= bx.minX && wx[k] <= bx.maxX && wz[k] >= bx.minZ && wz[k] <= bx.maxZ;
       }
-      for (let side = 0; side < 2; side++) {
-        // extent boundary points in the original's F/D order
-        let Fx, Fz, Dx, Dz;
-        if (side === 0) {   // right: F = prev, D = cur
-          Fx = sa.x + sa.extR * sa.lx / 4; Fz = sa.z + sa.extR * sa.lz / 4;
-          Dx = sb.x + sb.extR * sb.lx / 4; Dz = sb.z + sb.extR * sb.lz / 4;
-        } else {            // left: F = cur, D = prev
-          Fx = sb.x - sb.extL * sb.lx / 4; Fz = sb.z - sb.extL * sb.lz / 4;
-          Dx = sa.x - sa.extL * sa.lx / 4; Dz = sa.z - sa.extL * sa.lz / 4;
-        }
-        let px = Fx - Dx, pz = Fz - Dz;
-        const pl = Math.sqrt(px * px + pz * pz);
-        if (pl < 1e-6) continue;
-        px /= pl; pz /= pl;
-        const agx = -pz, agz = px;           // fixed outward normal (r.java)
-        for (let k = 0; k < 4; k++) {
-          bb[k] = (wx[ring[k]] - Fx) * agx + (wz[ring[k]] - Fz) * agz;
-        }
-        bb[4] = bb[0];
-        for (let k = 0; k < 4; k++) {
-          if (bb[k] * bb[k + 1] > 0) continue;          // no line crossing
-          let t, ax, az, bx, bz;
-          if (bb[k] > 0) {
-            t = bb[k] / (bb[k] - bb[k + 1]);
-            if (t > 1) continue;
-            ax = wx[ring[k]]; az = wz[ring[k]];
-            bx = wx[ring[k + 1]]; bz = wz[ring[k + 1]];
-          } else {
-            t = bb[k + 1] / (bb[k + 1] - bb[k]);
-            if (t > 1) continue;
-            ax = wx[ring[k + 1]]; az = wz[ring[k + 1]];
-            bx = wx[ring[k]]; bz = wz[ring[k]];
+      if (!active) continue;
+      for (let s2 = 0; s2 < 2; s2++) {       // the tile's own 2 station pairs
+        const i = t * 3 + s2;
+        const sa = sts[i], sb = sts[i + 1];
+        if (!sa || !sb) continue;
+        for (let side = 0; side < 2; side++) {
+          // extent boundary points (engine stations carry neighbour-clamped extents)
+          const ea = side === 0 ? sa.extR : sa.extL;
+          const eb = side === 0 ? sb.extR : sb.extL;
+          const sgn = side === 0 ? 1 : -1;
+          const Fx = sa.x + sgn * ea * sa.lx / 4, Fz = sa.z + sgn * ea * sa.lz / 4;
+          const Dx = sb.x + sgn * eb * sb.lx / 4, Dz = sb.z + sgn * eb * sb.lz / 4;
+          let px = Fx - Dx, pz = Fz - Dz;
+          const pl = Math.sqrt(px * px + pz * pz);
+          if (pl < 1e-6) continue;
+          px /= pl; pz /= pl;
+          let agx = -pz, agz = px;             // candidate outward normal
+          // orient away from the track centreline (station midpoints)
+          const cxm = (Fx + Dx) * 0.5 - (sa.x + sb.x) * 0.5;
+          const czm = (Fz + Dz) * 0.5 - (sa.z + sb.z) * 0.5;
+          if (agx * cxm + agz * czm < 0) { agx = -agx; agz = -agz; }
+          for (let k = 0; k < 4; k++) {
+            bb[k] = (wx[ring[k]] - Fx) * agx + (wz[ring[k]] - Fz) * agz;
           }
-          const aux = ax + t * (bx - ax), auz = az + t * (bz - az);
-          // crossing must land within the edge span - DOMINANT axis of the
-          // edge (original: |ag.z|>|ag.x| with ag.z=P.x, ag.x=-P.z)
-          if (Math.abs(px) > Math.abs(pz)) {
-            if (!((aux >= Fx && aux <= Dx) || (aux <= Fx && aux >= Dx))) continue;
-          } else {
-            if (!((auz >= Fz && auz <= Dz) || (auz <= Fz && auz >= Dz))) continue;
+          bb[4] = bb[0];
+          for (let k = 0; k < 4; k++) {
+            if (bb[k] * bb[k + 1] > 0) continue;          // no line crossing
+            let t3, ax, az, bx2, bz;
+            if (bb[k] > 0) {
+              t3 = bb[k] / (bb[k] - bb[k + 1]);
+              if (t3 > 1) continue;
+              ax = wx[ring[k]]; az = wz[ring[k]];
+              bx2 = wx[ring[k + 1]]; bz = wz[ring[k + 1]];
+            } else {
+              t3 = bb[k + 1] / (bb[k + 1] - bb[k]);
+              if (t3 > 1) continue;
+              ax = wx[ring[k + 1]]; az = wz[ring[k + 1]];
+              bx2 = wx[ring[k]]; bz = wz[ring[k]];
+            }
+            const aux = ax + t3 * (bx2 - ax), auz = az + t3 * (bz - az);
+            // crossing must land within the edge span - DOMINANT axis of the
+            // edge (original: |ag.z|>|ag.x| with ag.z=P.x, ag.x=-P.z). The
+            // crossing lies ON the edge line, so its narrow-axis coordinate
+            // equals the edge's trivially; only the long-axis span is a real
+            // test - checking the narrow axis rejects half the valid crossings
+            // on float error and makes the wall leaky.
+            if (Math.abs(px) > Math.abs(pz)) {
+              if (!((aux >= Fx && aux <= Dx) || (aux <= Fx && aux >= Dx))) continue;
+            } else {
+              if (!((auz >= Fz && auz <= Dz) || (auz <= Fz && auz >= Dz))) continue;
+            }
+            const f2 = (aux - ax) * agx + (auz - az) * agz;
+            if (f2 < bestF) { bestF = f2; pushX = f2 * agx; pushZ = f2 * agz; }
           }
-          const f2 = (aux - ax) * agx + (auz - az) * agz;
-          if (f2 < bestF) { bestF = f2; pushX = f2 * agx; pushZ = f2 * agz; }
         }
       }
     }
@@ -373,6 +409,21 @@ const raceScene = {
         if (this.sus[n] <= g.y - this.gJ[n]) this.sus[n] = g.y - this.gJ[n];
       } else {
         this.gH[n] = f4;
+        // downhill stick-assist: on steep S-curve descents the ground can dive
+        // away faster than the spring gravity (0.35*f5^2) pulls the wheel down;
+        // the original plant rule then resets the fall rate at every touch and
+        // the wheel enters a float->slam->float cycle (body vibration + the
+        // airborne control freeze). When a FALLING wheel is only slightly
+        // above ground that is descending faster than the wheel falls, glue it
+        // to the ground with the terrain's own descent rate. Genuine jumps are
+        // untouched: they leave with upward velocity (sus > 0) and build a gap
+        // well over 0.6u before falling.
+        const gap = f4 - g.y;
+        const groundRate = g.y - this.gJ[n];
+        if (this.sus[n] < 0 && gap < 0.6 && groundRate < -0.02 && this.sus[n] > groundRate) {
+          this.gH[n] = g.y;
+          this.sus[n] = groundRate;
+        }
       }
       this.gJ[n] = g.y;
     }
@@ -429,8 +480,8 @@ const raceScene = {
       // finish when the car crosses the checker-flag gate cross-section
       this.finished = true;
       this.phase = 'done';
-      this.coastT = 4.0;              // finish shot: slower orbit to the front,
-      this.doneT = 4.0;               // hold the front view, then fade
+      this.coastT = 2.4;              // finish shot: orbit to front + fade
+      this.doneT = 2.4;
       this.orbitFrom = this.camYaw;
       AudioSys.stopMusic();
       AudioSys.sfx('goal');
@@ -509,13 +560,9 @@ const raceScene = {
     const cine = this.phase === 'done' && this.doneT > 1 && this.coastT > 0;
     if (cine) {
       // finish shot: orbit from behind the car around to exactly its front
-      // axis (yaw+180); yaw is frozen once finished, so the target is stable.
-      // The sweep eases through the first 72% of the shot (slower than
-      // before), then the camera HOLDS the front view for a beat before the
-      // fade begins at 86%.
+      // axis (yaw+180); yaw is frozen once finished, so the target is stable
       const t = 1 - this.coastT / this.doneT;
-      const tOrb = Math.min(1, t / 0.72);
-      const e = tOrb * tOrb * (3 - 2 * tOrb); // smoothstep
+      const e = t * t * (3 - 2 * t);          // smoothstep
       const target = this.yaw + 180;
       this.camYaw = this.orbitFrom + (target - this.orbitFrom) * e;
     } else {
@@ -535,8 +582,7 @@ const raceScene = {
     if (cine) {
       // look at the car while orbiting (blend the look target over the first quarter)
       const t = 1 - this.coastT / this.doneT;
-      const tOrb = Math.min(1, t / 0.72);
-      const k = Math.min(1, tOrb * 4);
+      const k = Math.min(1, t * 4);
       camera.lookAt(
         this.camPos.x + Math.sin(rad) * 10 * (1 - k) + (this.pos.x - this.camPos.x) * k,
         this.camY * (1 - k) + (this.pos.y + 1.2) * k,
@@ -550,7 +596,6 @@ const raceScene = {
         this.camPos.z - Math.cos(rad) * 10
       );
     }
-    this.updateProps();
     // car transform: T(pos) * RY(180-yaw) * RZ(roll) * RX(-pitch)  (original a(b,b,int,boolean))
     this.car.position.copy(this.pos);
     this.car.rotation.order = 'YZX';
@@ -575,14 +620,35 @@ const raceScene = {
     const yBot = y0 + bgH;
     if (yBot < H) { ui.fillStyle = R3D.argb(th.ct).css; ui.fillRect(0, yBot, W, H - yBot); }
 
-    // 3D composited over the 2D background (props are part of the 3D scene)
+    // 3D composited over the 2D background (tiles + car + prop billboards)
     if (R3D.scene3d) {
+      this.updateTileWindow();
+      this.updateProps();
       renderer.render(R3D.scene3d, camera);
       ui.drawImage(R3D._gl, 0, 0);
     }
 
     // HUD
     this.drawHUD();
+
+    // pause overlay: dim the frozen race frame + simple menu
+    if (this.paused) {
+      ui.fillStyle = 'rgba(0,0,0,0.6)';
+      ui.fillRect(0, 0, W, H);
+      text('Paused', W / 2, 76, 5, '#ffffff', 'bold 20px Arial, sans-serif');
+      const items = [D.lang[94], 'Restart', 'Quit race'];   // Continue / Restart / Quit
+      let py = 130;
+      for (let i = 0; i < items.length; i++) {
+        text(items[i], W / 2, py, 5, i === this.pauseSel ? '#ffffff' : '#ffffaa', 'bold 15px Arial, sans-serif');
+        if (i === this.pauseSel) {
+          const w2 = ui.measureText(items[i]).width;
+          ui.drawImage(R3D._arrowL, W / 2 - w2 / 2 - 18, py - 2);
+          ui.drawImage(R3D._arrowR, W / 2 + w2 / 2 + 8, py - 2);
+        }
+        py += 24;
+      }
+      softkeys(D.lang[105], D.lang[92]);
+    }
 
     if (this.phase === 'prerace') {
       drawTitleTransparent();
@@ -593,66 +659,78 @@ const raceScene = {
     }
   },
 
-  // -------------------------------------------------- props (3D billboards)
-  // Per-sheet assets: 6 alpha-tested materials (one per distance frame, UV
-  // window into the sheet) + world sizes that reproduce the original's screen
-  // sizes at each 16u bucket mid (frame f covers depth 16f..16f+16 and was
-  // drawn at its native pixel size; px = Yw*(H/2)/(tan(fov/2)*d)). Sizes are
-  // lerped between buckets so the scaling is continuous instead of the
-  // original's 6 hard steps.
-  propAssets(key) {
-    let a = R3D._propAssets[key];
-    if (a) return a;
-    const img = R3D._sprImgs[key];
-    const spr = D.sprites[key];
-    if (!img || !img.complete || !img.naturalWidth || !spr) return null;
-    const iw = img.naturalWidth, ih = img.naturalHeight;
-    const base = new THREE.Texture(img);
-    base.magFilter = THREE.NearestFilter;
-    base.minFilter = THREE.NearestFilter;
-    base.generateMipmaps = false;
-    const mats = [], Yw = [], Xw = [];
-    const K = 2 * Math.tan(camera.fov * Math.PI / 360) / H;
-    for (let f = 0; f < 6; f++) {
-      const t = base.clone();
-      t.offset.set(spr.ox[f] / iw, 1 - (spr.oy[f] + spr.h[f]) / ih);
-      t.repeat.set(spr.w[f] / iw, spr.h[f] / ih);
-      t.needsUpdate = true;
-      mats.push(new THREE.MeshBasicMaterial({
-        map: t, alphaTest: 0.5, side: THREE.DoubleSide,
-        depthTest: true, depthWrite: true,
-      }));
-      const d = 16 * f + 8;
-      Yw.push(spr.h[f] * d * K);
-      Xw.push(spr.w[f] * d * K);
+  // -------------------------------------------------- prop billboards
+  // The original draws each race section's props as 2D sprites INTERLEAVED with
+  // the far-to-near section rendering (h.d(Graphics) releases the 3D target per
+  // section), so nearer terrain overdraws farther sprites — trees below the
+  // road elevation are hidden by the hill in front of them. A whole-mesh pass
+  // with a 2D prop overlay on top loses that occlusion (trees visible through
+  // the road). The port draws props as depth-tested billboards INSIDE the 3D
+  // scene instead: per-pixel terrain occlusion, same bottom-center anchor
+  // (i.java), same 6 distance frames (16u buckets, 6..128u gate, r.java).
+  buildPropBillboards(sc) {
+    this.propBills = [];
+    this._propGeos = {};
+    if (!R3D._propMatCache) R3D._propMatCache = {};
+    const geoCache = this._propGeos, matCache = R3D._propMatCache;
+    for (const p of this.world.props) {
+      const key = sheetKey(this.theme, p.sheet);
+      const spr = key ? D.sprites[key] : null;
+      if (!spr) continue;
+      let mat = matCache[key];
+      if (!mat) {
+        const tex = R3D._sprTex['spr_' + key];
+        if (!tex) continue;
+        mat = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide });
+        matCache[key] = mat;
+      }
+      const geos = geoCache[key] || (geoCache[key] = makeSpriteGeos(key, spr));
+      const mesh = new THREE.Mesh(geos[0], mat);
+      mesh.visible = false;
+      sc.add(mesh);
+      this.propBills.push({ p, key, spr, geos, mesh, frame: 0 });
     }
-    a = { mats, Yw, Xw };
-    R3D._propAssets[key] = a;
-    return a;
   },
 
   updateProps() {
-    if (!this.propMeshes) return;
-    const cp = camera.position;
-    camera.getWorldDirection(TMPV);
-    const fx = TMPV.x, fz = TMPV.z;
-    for (const m of this.propMeshes) {
-      const pr = m.userData.prop;
-      const a = this.propAssets(pr.key);
-      if (!a) { m.visible = false; continue; }
-      const dx = pr.p.x - cp.x, dz = pr.p.z - cp.z;
-      const depth = dx * fx + dz * fz;
-      if (depth < 6 || depth > 128) { m.visible = false; continue; }
-      let f = Math.floor(depth / 16);
-      if (f > 5) f = 5;
-      if (f < 0) f = 0;
-      const frac = Math.min(1, depth / 16 - f);
-      const f2 = f < 5 ? f + 1 : 5;
-      m.material = a.mats[f];
-      m.scale.set(a.Xw[f] + (a.Xw[f2] - a.Xw[f]) * frac,
-                  a.Yw[f] + (a.Yw[f2] - a.Yw[f]) * frac, 1);
-      m.rotation.y = Math.atan2(cp.x - pr.p.x, cp.z - pr.p.z);
-      m.visible = true;
+    if (!this.propBills) return;
+    const k0 = 2 * Math.tan(camera.fov * Math.PI / 360);   // 2*tan(fov/2)
+    const v = this._v3 || (this._v3 = new THREE.Vector3());
+    const camDir = this._camDir || (this._camDir = new THREE.Vector3());
+    camera.getWorldDirection(camDir);
+    for (const b of this.propBills) {
+      const p = b.p;
+      const dx = p.x - camera.position.x, dz = p.z - camera.position.z;
+      const depth = dx * camDir.x + dz * camDir.z;          // view-space Z (r.java -x[2])
+      if (depth < 6 || depth > 128) { b.mesh.visible = false; continue; }
+      v.set(p.x, p.y, p.z).project(camera);
+      if (v.z > 1) { b.mesh.visible = false; continue; }
+      let frame = Math.floor(depth / 16);
+      if (frame > 5) frame = 5;
+      if (frame < 0) frame = 0;
+      const w = b.spr.w[frame], h = b.spr.h[frame];
+      if (!w || !h) { b.mesh.visible = false; continue; }
+      if (b.frame !== frame) { b.frame = frame; b.mesh.geometry = b.geos[frame]; }
+      // world size so the quad covers exactly w x h pixels at this depth
+      const k = k0 * depth / H;
+      b.mesh.scale.set(w * k, h * k, 1);
+      b.mesh.position.set(p.x, p.y, p.z);
+      b.mesh.rotation.y = Math.atan2(camera.position.x - p.x, camera.position.z - p.z);
+      b.mesh.visible = true;
+    }
+  },
+
+  // original render window: h.d(Graphics) draws tiles a-1..a+4 only (a = car
+  // tile; the 16-slot ring refreshes +-7). Everything farther shows the 2D
+  // background — distant elevated strands never float in the sky. The finish
+  // cinematic orbits the camera to the car's front, so widen it there.
+  updateTileWindow() {
+    const meshes = this.world.tileMeshes;
+    const a = this.tileIdx;
+    if (!meshes || a === undefined || a === null) return;
+    const back = this.phase === 'done' ? 5 : 2;
+    for (let i = 0; i < meshes.length; i++) {
+      meshes[i].visible = i >= a - back && i <= a + 5;
     }
   },
 
@@ -676,10 +754,10 @@ const raceScene = {
       const idx = Math.min(this.cdN, 1);
       text(labels[idx], W / 2, H / 2 - 20, 5, '#ffffff', 'bold 26px Arial, sans-serif');
     }
-    // finish shot fade-out into the results scene (after the front-view hold)
+    // finish shot fade-out into the results scene
     if (this.phase === 'done' && this.doneT > 1) {
       const t = 1 - Math.max(0, this.coastT) / this.doneT;
-      const a = t <= 0.86 ? 0 : Math.min(1, (t - 0.86) / 0.14);
+      const a = t <= 0.72 ? 0 : Math.min(1, (t - 0.72) / 0.28);
       if (a > 0) {
         ui.fillStyle = 'rgba(0,0,0,' + a.toFixed(3) + ')';
         ui.fillRect(0, 0, W, H);
@@ -697,7 +775,6 @@ function drawTitleTransparent() {
 // background images cache
 R3D._bgImg = {};
 R3D._sprImgs = {};
-R3D._propAssets = {};   // cached billboard materials + world sizes per sheet
 (function preload() {
   const img = (f) => {
     const i = new Image(); i.src = 'assets/img/' + f; return i;

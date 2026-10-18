@@ -48,29 +48,58 @@ function text(str, x, y, align, color, font) {
 }
 R3D.text = text;
 
+// ---- checkered-flag banner system (original h.java: b(Graphics) + menu loop k()) ----
+// The top (title_up) and bottom (title_down) checkered banners SLIDE vertically.
+// V is the slide offset: it starts at the banner height (banners fully off-screen),
+// counts down 100 px/s while a menu opens (top banner drops into place from y=-V,
+// bottom banner rises from y=+V) and counts back up while the menu closes — the
+// next menu then slides its banner back in. The section name is drawn centered
+// INSIDE the top banner and slides with it (h.java: y=(cG-w)/2 - V); menus without
+// a header show the RALLY 3D logo there instead (title screen).
+const BANNER_H = 60;                     // title_up.png / title_down.png height
+const BANNER_SPD = 100;                  // original: 4 px per 25fps frame = 100 px/s
+R3D._bannerV = BANNER_H;                 // first menu (title) slides in on boot
+
 function softkeys(left, right) {
-  text(left || '', W / 2, H - 18, 5, COL_TEXT, 'bold 15px Arial, sans-serif');
-  text(right || '', W - 6, H - 18, 8, COL_TEXT, 'bold 15px Arial, sans-serif');
+  // softkey labels sit on the bottom banner and slide with it (h.java: cH + V),
+  // vertically CENTRED inside the blue checkered flag (60px band)
+  const V = Math.round(R3D._bannerV || 0);
+  const y = H - BANNER_H + Math.round((BANNER_H - 15) / 2) + V;
+  text(left || '', 118, y, 5, COL_TEXT, 'bold 15px Arial, sans-serif');
+  text(right || '', W - 6, y, 8, COL_TEXT, 'bold 15px Arial, sans-serif');
 }
 R3D.softkeys = softkeys;
 
-function drawTitle() {
+function drawTitle(header) {
+  const V = Math.round(R3D._bannerV);
   if (R3D._titleImg) ui.drawImage(R3D._titleImg, 0, 0);
-  if (R3D._barUp) ui.drawImage(R3D._barUp, 0, 0);
-  if (R3D._barDown) ui.drawImage(R3D._barDown, 0, H - R3D._barDown.height);
-  if (R3D._logoImg) ui.drawImage(R3D._logoImg, (W - R3D._logoImg.width) / 2, 12);
+  if (R3D._barUp) ui.drawImage(R3D._barUp, 0, -V);
+  if (R3D._barDown) ui.drawImage(R3D._barDown, 0, H - R3D._barDown.height + V);
+  if (header) {
+    // section name centered inside the top checkered banner
+    let size = 17;
+    let font = 'bold ' + size + 'px Arial, sans-serif';
+    ui.font = font;
+    while (ui.measureText(header).width > W - 10 && size > 11) {
+      size -= 1;
+      font = 'bold ' + size + 'px Arial, sans-serif';
+      ui.font = font;
+    }
+    text(header, W / 2, Math.round((BANNER_H - size) / 2) - V, 5, COL_TEXT, font);
+  } else if (R3D._logoImg) {
+    // no header → RALLY 3D logo centered in the banner (title screen)
+    ui.drawImage(R3D._logoImg, (W - R3D._logoImg.width) / 2,
+                 Math.round((BANNER_H - R3D._logoImg.height) / 2) - V);
+  }
 }
 function padlock(x, y) {
-  // light grey padlock: shackle on top, body below (readable over the car art)
-  ui.strokeStyle = '#9e9e9e';
+  ui.fillStyle = '#606060';
+  ui.fillRect(x, y + 3, 7, 6);
+  ui.strokeStyle = '#808080';
   ui.lineWidth = 1.5;
   ui.beginPath();
   ui.arc(x + 3.5, y + 3, 2.6, Math.PI, 0);
   ui.stroke();
-  ui.fillStyle = '#7d7d7d';
-  ui.fillRect(x, y + 3, 7, 6);
-  ui.fillStyle = 'rgba(0,0,0,0.35)';
-  ui.fillRect(x, y + 7, 7, 2);
 }
 
 // ---------------------------------------------------------------- save
@@ -235,7 +264,7 @@ function keyName(e) {
     Enter: 'F', ' ': 'F', Digit5: 'F',
     Digit4: 'L', Digit6: 'R', Digit2: 'U', Digit8: 'D',
     KeyQ: 'LS', KeyW: 'RS', F1: 'LS', F2: 'RS',
-    Escape: 'RS', Backspace: 'RS',
+    Escape: 'RS', Backspace: 'RS', KeyP: 'RS',   // P = pause in-race (RS alias)
   };
   return map[e.code] || null;
 }
@@ -308,10 +337,48 @@ R3D.pollInput = function () {
   for (const k of ['L', 'R', 'U', 'D']) keys[k] = kbKeys[k] || touchState[k];
 };
 
+// mouse drag (car-select showroom spin; consumed by the active scene each frame)
+R3D.dragState = { down: false, dx: 0 };
+(function setupMouseDrag() {
+  const st = R3D.dragState;
+  uiCanvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    st.down = true; st.dx = 0; st._x = e.clientX;
+    AudioSys.ensure();
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!st.down) return;
+    const r = uiCanvas.getBoundingClientRect();
+    if (r.width > 0) st.dx += (e.clientX - st._x) * (W / r.width);
+    st._x = e.clientX;
+  });
+  window.addEventListener('mouseup', () => { st.down = false; });
+})();
+
 // ---------------------------------------------------------------- scenes / state machine
-let scene = null;           // {update(dt), draw(), enter(...)}
+let scene = null;           // {update(dt), draw(), enter(...), banner?}
 let last = 0;
-R3D.setScene = function (s) { scene = s; R3D.activeScene = s; if (s.enter) s.enter(); };
+let _bannerExit = null;     // while set: {next, toBanner} — the checkered flag is sliding out
+
+function applyScene(s) {
+  scene = s;
+  R3D._bannerV = s.banner ? BANNER_H : 0;   // menus slide their flag in; other scenes have none
+  R3D.clearPressed();
+  if (s.enter) s.enter();
+}
+
+// Menu transitions replay the original slide: leaving a menu first slides the
+// checkered flag out (V back up to banner height), THEN the pending scene opens
+// and slides its own banner in (h.java menu loop: bl=true → V += 4/frame → return).
+R3D.setScene = function (s) {
+  if (_bannerExit) return;                       // input is frozen during the slide-out
+  if (scene && scene.banner) {
+    _bannerExit = { next: s, toBanner: !!s.banner };
+    return;
+  }
+  applyScene(s);
+};
 R3D.scene3d = null;          // active three.js scene for race/showroom
 R3D.clearScene3d = function () {
   if (R3D.scene3d) {
@@ -343,23 +410,29 @@ R3D.ensureMenuMusic = function () {
 };
 
 // shared: draw a menu list over title bg.
-// Screen headers sit just BELOW the RALLY 3D logo (logo spans y 12..51);
-// drawing them at y=10 overlapped the logo art (user-reported misalignment).
+// While the banner slides, items converge horizontally with a 6x parallax offset
+// (h.java: n4 = -V*6, then n4 = -n4 after each plain item — items fan in from
+// alternating sides); the selection arrows appear once the banner has settled.
 function menuList(title, items, sel, startY) {
-  drawTitle();
-  if (title) text(title, W / 2, 54, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
-  let y = startY || 72;
+  drawTitle(title || null);
+  const V = R3D._bannerV;
+  const settled = V <= 0;
+  const slide = V * 6;
+  let y = startY || 52;
+  let flip = -1;                        // h.java: first item from the left, then alternating
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const locked = it.locked;
     const col = i === sel ? COL_WHITE : (locked ? COL_GREY : COL_TEXT);
-    text(it.label, W / 2, y, 5, col, 'bold 14px Arial, sans-serif');
-    const wdt = ui.measureText(it.label).width;
-    if (i === sel) {
-      ui.drawImage(R3D._arrowR, W / 2 + wdt / 2 + 8, y - 2);
-      ui.drawImage(R3D._arrowL, W / 2 - wdt / 2 - 18, y - 2);
+    const off = Math.round(slide * flip);
+    text(it.label, W / 2 + off, y, 5, col, 'bold 14px Arial, sans-serif');
+    if (i === sel && settled) {
+      const wdt = ui.measureText(it.label).width;
+      ui.drawImage(R3D._arrowR, W / 2 + wdt / 2 + 8 + off, y - 2);
+      ui.drawImage(R3D._arrowL, W / 2 - wdt / 2 - 18 + off, y - 2);
     }
-    if (locked) padlock(W - 22, y + 2);   // fixed column: every lock lines up
+    if (locked) padlock(W / 2 + ui.measureText(it.label).width / 2 + 8 - off, y + 2);
+    flip = -flip;
     y += 17;
   }
 }
@@ -373,11 +446,26 @@ R3D._loop = function () { requestAnimationFrame(function loop(ts) {
   const dt = Math.min(0.05, (ts - last) / 1000 || 0.016);
   last = ts;
   R3D.pollInput();
-  if (scene) {
-    if (scene.menuMusic && !(scene.musicT > 0)) R3D.ensureMenuMusic();
-    scene.update(dt);
-    scene.draw();
+  if (_bannerExit) {
+    // slide the flag out (V: current → banner height), then commit the switch
+    R3D._bannerV = Math.min(BANNER_H, R3D._bannerV + BANNER_SPD * dt);
+    if (scene) scene.draw();
+    if (R3D._bannerV >= BANNER_H) {
+      const nx = _bannerExit.next;
+      _bannerExit = null;
+      applyScene(nx);
+    }
+  } else {
+    if (scene && scene.banner && R3D._bannerV > 0) {
+      R3D._bannerV = Math.max(0, R3D._bannerV - BANNER_SPD * dt);   // flag slides in
+    }
+    if (scene) {
+      if (scene.menuMusic && !(scene.musicT > 0)) R3D.ensureMenuMusic();
+      scene.update(dt);
+      scene.draw();
+    }
   }
+  R3D.dragState.dx = 0;   // drag deltas are per-frame, consumed by the scene
   R3D.clearPressed();
 }); };
 

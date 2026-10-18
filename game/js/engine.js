@@ -30,6 +30,7 @@ R3D.argb = argb;
 
 // ---------------------------------------------------------------- textures
 const TEX = {};
+R3D._sprTex = TEX;      // sprite-sheet textures for the race prop billboards
 function loadTex(key, file, repeat) {
   return new Promise((res) => {
     const img = new Image();
@@ -107,18 +108,13 @@ R3D.buildCar = function (carIdx) {
 //  - cross-section points H[0..7]: left side -nv[0,2,4,6], right side +pv[6,4,2,0]
 //    (H0/H7 outermost terrain edge, H3/H4 road edges at profile col6)
 //  - strip k spans H[k]..H[k+1]; strip 3 = road
-// bridge profile rows (11/12/13: raised rails, plain deck ledge): identified
-// by atlas columns 18-20 = 6,6,6 (hill rows 4-6 share extent 12 but have
-// atlas 4,1,2). Their drivable deck is the road strip only (|lat| <= 8u);
-// sections beyond it are the vertical rail faces / ledge with K=0.
-function rowBridge(row) { return row[18] === 6 && row[19] === 6 && row[20] === 6; }
-
 R3D.buildTrack = function (track) {
   const tiles = track.tiles;
   const theme = track.theme;
   const P = D.profiles;
   const positions = [], uvs = [], colors = [], indices = [];
   const props = [];
+  const stations = []; // {x,y,z, fx,fz, lx,lz, H[8], extR, extL, ti, st}
   let rngState = 1234 + tiles.length * 7919;
   function rng() { rngState = (rngState * 1103515245 + 12345) & 0x7fffffff; return rngState / 0x7fffffff; }
 
@@ -166,15 +162,15 @@ R3D.buildTrack = function (track) {
   // for matched chains (end == next start) this reduces to the original
   // exactly; for step transitions it becomes a smooth 32u morph, so hills,
   // walls, ditches and bridge approaches are truly continuous.
-  const stations = []; // {x,y,z, fx,fz, lx,lz, H[8], extR, extL, ti, st}
-  const tileBoxes = [];  // per-tile AABB of the outermost cross-section vertices
-                         // (original r.p, accumulated from H[0]/H[7] only) - used
-                         // by the wall test to activate a tile's boundary edges
   let prevEndR = null, prevEndN = null;
+  // bridge profile rows (11/12/13: raised rails, plain deck ledge): identified
+  // by atlas columns 18-20 = 6,6,6 (hill rows 4-6 share extent 12 but have
+  // atlas 4,1,2). Their drivable deck is the road strip only (|lat| <= 8u);
+  // sections beyond it are the vertical rail faces / ledge with K=0.
+  function rowBridge(row) { return row[18] === 6 && row[19] === 6 && row[20] === 6; }
   for (let ti = 0; ti < tiles.length; ti++) {
     const t = tiles[ti];
     const rp = P[t.rowL], rn = P[t.rowR];      // rowL = right side (s7), rowR = left side (s8)
-    let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
     const startR = prevEndR || rp.slice(0, 8);
     const startN = prevEndN || rn.slice(0, 8);
     let pv = startR.slice(), nv = startN.slice();
@@ -222,10 +218,6 @@ R3D.buildTrack = function (track) {
       for (let k = 0; k < 4; k++) {   // right side: H[7]=outermost ... H[4]=road right edge
         H[7 - k] = { x: px + pv[k * 2] * lx, y: h + pv[k * 2 + 1], z: pz + pv[k * 2] * lz };
       }
-      if (H[0].x < bx0) bx0 = H[0].x; if (H[0].x > bx1) bx1 = H[0].x;
-      if (H[0].z < bz0) bz0 = H[0].z; if (H[0].z > bz1) bz1 = H[0].z;
-      if (H[7].x < bx0) bx0 = H[7].x; if (H[7].x > bx1) bx1 = H[7].x;
-      if (H[7].z < bz0) bz0 = H[7].z; if (H[7].z > bz1) bz1 = H[7].z;
       stations.push({
         x: px, y: h, z: pz, fx, fz, lx, lz, H,
         extR: extRs + dExtR * st, extL: extLs + dExtL * st,
@@ -241,7 +233,6 @@ R3D.buildTrack = function (track) {
       for (let i = 0; i < 8; i++) { pv[i] += dpv[i]; nv[i] += dnv[i]; }
     }
     extRs += dExtR * 3; extLs += dExtL * 3;
-    tileBoxes.push({ minx: bx0, maxx: bx1, minz: bz0, maxz: bz1 });
 
     // props at the tile's last cross-section, at cross-section vertices (r.java a(Graphics,T,T))
     const tp = tileProps[ti];
@@ -264,14 +255,23 @@ R3D.buildTrack = function (track) {
     prevEndN = rn.slice(8, 16);
   }
 
-  // ---- road/terrain strips: per tile, 2 quads per section (3 cross-sections) ----
+  // ---- road/terrain strips: ONE MESH PER TILE (2 quads per section, 3 cross-sections).
+  // The original renders only a 6-tile window (h.d(Graphics): tiles a-1..a+4 drawn
+  // far-to-near, props interleaved per section); distant strands are NEVER drawn
+  // (the 2D background + haze show instead). Per-tile meshes let race.js toggle
+  // that window every frame — distant elevated strands no longer float in the sky.
   const texW = 256;
+  const trackMat = new THREE.MeshBasicMaterial({
+    map: TEX['squares_' + theme], vertexColors: true, side: THREE.DoubleSide,
+  });
+  const tileMeshes = [];
   for (let ti = 0; ti < tiles.length; ti++) {
     const t = tiles[ti];
     const rp = P[t.rowL], rn = P[t.rowR];
     const ncols = [rn[20], rn[19], rn[18], (t.line === 0 ? 0 : 5), rp[18], rp[19], rp[20]];
     const vbase = (ti & 1) * 0.5;
     const varr = variants[ti % 8];
+    const positions = [], uvs = [], colors = [], indices = [];
     for (let q = 0; q < 2; q++) {
       const SA = stations[ti * 3 + q], SB = stations[ti * 3 + q + 1];
       for (let sec = 0; sec < 7; sec++) {
@@ -303,23 +303,13 @@ R3D.buildTrack = function (track) {
         indices.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
       }
     }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    tileMeshes.push(new THREE.Mesh(geo, trackMat));
   }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geo.setIndex(indices);
-  // Original JSR-184 renderer uses the default CULL_BACK (r.java never calls
-  // setCulling) and its strip winding puts the FRONT face on the top side of
-  // every strip (vertex order H[sec+1], H[sec] with the track heading).
-  // DoubleSide made the undersides of elevated sections visible as floating
-  // slabs/wedges against the sky ("patches of road and grass above") - the
-  // original never showed them. FrontSide restores the exact visibility.
-  const mat = new THREE.MeshBasicMaterial({
-    map: TEX['squares_' + theme], vertexColors: true, side: THREE.FrontSide,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
 
   // per-tile section walkability flags (r.java K[]): K[0..2] from the LEFT row
   // (rowR) cols 21..23, K[4..6] from the RIGHT row (rowL) cols 23..21, K[3]=1.
@@ -329,7 +319,26 @@ R3D.buildTrack = function (track) {
     return [R[21], R[22], R[23], 1, L[23], L[22], L[21]];
   });
 
-  return { mesh, props, stations, tileK, tileBoxes };
+  // per-tile boundary-wall activation bbox (original r.p): min/max over the
+  // tile's 3 stations' OUTERMOST cross-section vertices H[0]/H[7], X/Z only
+  // (u.java a(b) tests x and z). h.a(o,o2) only tests walls of tiles whose
+  // bbox contains one of the four wheel points — without this gate a far-away
+  // edge whose infinite line crosses the wheel rectangle shoves the car
+  // sideways every frame (the "car pushed to one side" bug).
+  const tileBboxes = [];
+  for (let ti = 0; ti < tiles.length; ti++) {
+    let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
+    for (let st = 0; st < 3; st++) {
+      const s = stations[ti * 3 + st];
+      for (const v of [s.H[0], s.H[7]]) {
+        if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+        if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+      }
+    }
+    tileBboxes.push({ minX, maxX, minZ, maxZ });
+  }
+
+  return { tileMeshes, props, stations, tileK, tileBboxes };
 };
 
 // ---------------------------------------------------------------- ground sampling

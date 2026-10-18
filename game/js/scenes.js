@@ -29,7 +29,7 @@ function mainItems() {
 }
 
 const titleScene = {
-  sel: 0, menuMusic: true,
+  sel: 0, menuMusic: true, banner: true,   // no header → logo slides in with the banner
   enter() { AudioSys.play('title', true, 0.5); R3D.clearScene3d(); },
   update() {
     if (wasPressed('D')) this.sel = (this.sel + 1) % 4;
@@ -50,7 +50,7 @@ const titleScene = {
 
 // ================================================================ NEW GAME (mode select)
 const newGameScene = {
-  sel: 0, menuMusic: true,
+  sel: 0, menuMusic: true, banner: true,
   enter() { this.sel = 0; },
   update() {
     const n = 2;
@@ -71,7 +71,7 @@ const newGameScene = {
 
 // ================================================================ NEXT RACE (championship hub)
 const nextRaceScene = {
-  menuMusic: true,
+  menuMusic: true, banner: true,
   enter() {
     R3D.clearScene3d();
   },
@@ -84,26 +84,23 @@ const nextRaceScene = {
   },
   draw() {
     ui.fillStyle = '#000'; ui.fillRect(0, 0, W, H);
-    drawTitle();
-    const t = S().champ % 12;
-    text(D.lang[15], W / 2, 90, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
-    text((t + 1) + ' / 12', W / 2, 116, 5, COL_WHITE, 'bold 22px Arial, sans-serif');
-    text(D.lang[41], W / 2, 158, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
-    text(D.tracks[t].name, W / 2, 180, 5, COL_WHITE, 'bold 16px Arial, sans-serif');
+    drawTitle(D.lang[15]);               // "Championship" inside the sliding banner
+    // MODIFIED-GAME: no 5/12 progress counter and no track name — just the
+    // "Next race" heading with the earned trophies below, each row centred.
+    text(D.lang[41], W / 2, 116, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
     const cups = R3D._cupImgs;
-    // trophy grid: centre EACH row (the old left-aligned grid left the last
-    // row hanging on the left - user-reported asymmetry). Cups are 18px wide
-    // on a 28px pitch; row width = n*28 - 10. Rows start at y 219 with a 25px
-    // pitch so even the second row clears the bottom bar (y 260).
-    const earned = [];
-    for (let i = 0; i < 12; i++) if (S().medals[i] <= 2) earned.push(S().medals[i]);
-    for (let r = 0; r * 6 < earned.length; r++) {
-      const n = Math.min(6, earned.length - r * 6);
-      const x0 = Math.round((W - (n * 28 - 10)) / 2);
-      for (let i = 0; i < n; i++) {
-        const cup = cups[earned[r * 6 + i]];
-        if (cup) ui.drawImage(cup, x0 + i * 28, 219 + r * 25);
+    const rows = [[], []];
+    for (let i = 0; i < 12; i++) if (S().medals[i] <= 2) rows[i < 6 ? 0 : 1].push(i);
+    let ty = 168;
+    for (const row of rows) {
+      if (row.length) {
+        const x0 = Math.round((W - (row.length * 28 - 10)) / 2);   // centred: n*28-10 wide
+        for (let k = 0; k < row.length; k++) {
+          const m = S().medals[row[k]];
+          if (cups[m]) ui.drawImage(cups[m], x0 + k * 28, ty);
+        }
       }
+      ty += 30;
     }
     softkeys(D.lang[103], '');
   },
@@ -111,7 +108,7 @@ const nextRaceScene = {
 
 // ================================================================ TRACK SELECT
 const trackSelectScene = {
-  sel: 0, menuMusic: true,
+  sel: 0, menuMusic: true, banner: true,
   enter() {
     if (R3D.game.mode === 'champ') this.sel = S().champ % 12;
     else this.sel = R3D.game.trackIdx || 0;
@@ -136,25 +133,24 @@ const trackSelectScene = {
     const items = this.items();
     const start = Math.max(0, Math.min(this.sel - 5, items.length - 10));
     const vis = items.slice(start, start + 10);
+    const V = R3D._bannerV, settled = V <= 0;
+    const slide = Math.round(V * 6);   // names converge from the left, icons from the right
     ui.fillStyle = '#000'; ui.fillRect(0, 0, W, H);
-    drawTitle();
-    // header just below the logo (logo spans y 12..51); the 10 rows start at
-    // 74 with an 18px pitch so the last row clears the bottom bar (y 260).
-    // Locks sit in a fixed right-hand column so they line up.
-    text(D.lang[58], W / 2, 54, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
-    let y = 74;
+    drawTitle(D.lang[58]);              // "Select track" inside the sliding banner
+    // all 10 rows fit BETWEEN the checkered banners (free band y 60..260):
+    // pitch 19 from y=66 keeps the last row clear of the bottom flag, matching
+    // the original's contained list; cups and padlocks share one right edge.
+    let y = 66;
     for (let i = 0; i < vis.length; i++) {
       const idx = start + i;
       const it = vis[i];
       const col = idx === this.sel ? COL_WHITE : (it.locked ? COL_GREY : COL_TEXT);
-      text(it.label, W / 2, y, 5, col, 'bold 14px Arial, sans-serif');
-      const wdt = ui.measureText(it.label).width;
-      if (idx === this.sel) {
-        ui.drawImage(R3D._arrowR, W / 2 + wdt / 2 + 8, y - 2);
-        ui.drawImage(R3D._arrowL, W / 2 - wdt / 2 - 18, y - 2);
-      }
-      if (it.locked) padlock(W - 22, y + 3);
-      y += 18;
+      text(it.label, 16 - slide, y, 0, col, 'bold 14px Arial, sans-serif');
+      if (idx === this.sel && settled) ui.drawImage(R3D._arrowR, 3, y - 2);
+      const m = S().medals[idx];
+      if (it.locked) padlock(W - 12 + slide, y + 1);
+      else if (m <= 2 && R3D._cupImgs[m]) ui.drawImage(R3D._cupImgs[m], W - 23 + slide, y - 1);
+      y += 19;
     }
     softkeys(D.lang[105], D.lang[92]);
   },
@@ -166,12 +162,10 @@ const trackSelectScene = {
 // tilted 35 deg down; the three stat bars sit at the very bottom (u - cG - 3w)
 // with the label left-aligned at x=5 and the bar on the right half of the screen.
 const carSelectScene = {
-  sel: 0, yaw: 0, v: 28, menuMusic: true,
-  dragging: false, spinV: 250,          // spin velocity (deg/s): drag overrules,
-                                        // then eases back to the 250 deg/s showroom turn
+  sel: 0, yaw: 0, v: 28, spinVel: 250, menuMusic: true, confirmT: 0,
   enter() {
     this.sel = R3D.game.carIdx || 0;
-    this.yaw = 0; this.v = 28; this.spinV = 250; this.dragging = false;
+    this.yaw = 0; this.v = 28; this.spinVel = 250; this.confirmT = 0;
     R3D.clearScene3d();
     // reset the shared camera (it may be stale after a race)
     camera.position.set(0, 0, 0);
@@ -195,17 +189,39 @@ const carSelectScene = {
     this.holder.position.set(0, 0, -8 - this.v);
   },
   update(dt) {
+    // MODIFIED-GAME confirm beat: after Select, the camera zooms OUT from the
+    // still-spinning car before the race scene opens (blocks all other input).
+    if (this.confirmT > 0) {
+      this.confirmT -= dt;
+      this.v = Math.min(15, this.v + dt * 30);
+      this.holder.position.z = -8 - this.v;
+      this.spinVel += (250 - this.spinVel) * Math.min(1, dt * 1.4);
+      this.yaw += this.spinVel * dt;
+      this.car.rotation.y = this.yaw * Math.PI / 180;
+      if (this.confirmT <= 0) { R3D.clearScene3d(); R3D.setScene(R3D.raceScene); }
+      return;
+    }
     if (this.v > 0) {
       this.v = Math.max(0, this.v - dt * 28);
       this.holder.position.z = -8 - this.v;
     }
-    // MODDED SHOWROOM: the car auto-rotates at the original 250 deg/s (10 deg
-    // per 25fps frame); click + drag spins it by hand instead, and on release
-    // the flick's momentum carries over and eases back into the turntable turn.
-    if (!this.dragging) {
-      this.spinV += (250 - this.spinV) * Math.min(1, dt * 1.2);
-      this.yaw = (this.yaw + this.spinV * dt) % 360;
+    // podium spin: original auto-rotate 250 deg/s (10 deg per 25fps frame),
+    // plus the MODIFIED-GAME extra: grab the car with the mouse and spin it —
+    // while dragging the car follows 1:1, on release it keeps the flick's
+    // momentum and eases back into the classic auto-rotation.
+    const dg = R3D.dragState;
+    if (dg && dg.down) {
+      if (dg.dx !== 0) {
+        const dYaw = dg.dx * 2.2;               // ~2.2 deg per canvas px
+        this.yaw += dYaw;
+        const inst = Math.max(-1500, Math.min(1500, dYaw / Math.max(dt, 1e-4)));
+        this.spinVel = this.spinVel * 0.55 + inst * 0.45;
+      }
+    } else {
+      this.spinVel += (250 - this.spinVel) * Math.min(1, dt * 1.4);
+      this.yaw += this.spinVel * dt;
     }
+    if (this.yaw > 180000 || this.yaw < -180000) this.yaw %= 360;
     this.car.rotation.y = this.yaw * Math.PI / 180;
     if (wasPressed('R')) { this.sel = (this.sel + 1) % 4; this.swap(); }
     if (wasPressed('L')) { this.sel = (this.sel + 3) % 4; this.swap(); }
@@ -213,8 +229,8 @@ const carSelectScene = {
     if (wasPressed('F') || wasPressed('U')) {
       if (S().cars[this.sel] === 1) return;
       R3D.game.carIdx = this.sel;
-      R3D.clearScene3d();
-      R3D.setScene(R3D.raceScene);
+      this.confirmT = 0.55;                 // zoom-out beat before the race
+      return;
     }
   },
   draw() {
@@ -228,16 +244,15 @@ const carSelectScene = {
     text(car.name, W / 2, 12, 5, locked ? COL_GREY : COL_TEXT, 'bold 16px Arial, sans-serif');
     if (locked) {
       text(D.lang[9], W / 2, Math.floor((H - 14) / 2), 5, COL_WHITE, 'bold 14px Arial, sans-serif');
+      const msgs = ['4x ' + D.lang[8], '8x ' + D.lang[60], '12x ' + D.lang[28]];
       text(D.lang[0].split('.')[0] + '.', 16, 70, 0, COL_GREY, 'bold 11px Arial, sans-serif');
     } else {
-      // stat bars at the very bottom, original layout (label x=5, bar right half,
-      // both 6px from the screen edges)
-      text('drag the car to spin it', W / 2, 232, 5, COL_GREY, 'bold 10px Arial, sans-serif');
+      // stat bars at the very bottom, original layout (label x=5, bar right half)
       const bars = [[D.lang[65], R3D.STAT_TOP], [D.lang[4], R3D.STAT_ACC], [D.lang[30], R3D.STAT_GRIP]];
       let y = 250;
       for (const [label, stat] of bars) {
-        text(label, 6, y, 0, COL_TEXT, 'bold 12px Arial, sans-serif');
-        ui.fillStyle = '#000'; ui.fillRect(119, y + 3, 115, 6);
+        text(label, 5, y, 0, COL_TEXT, 'bold 12px Arial, sans-serif');
+        ui.fillStyle = '#000'; ui.fillRect(119, y + 3, 116, 6);
         ui.fillStyle = '#ff0000'; ui.fillRect(120, y + 4, 114, 4);
         ui.fillStyle = '#ffffaa'; ui.fillRect(120, y + 4, 114 * stat[this.sel] / 100, 4);
         y += 18;
@@ -251,7 +266,7 @@ const carSelectScene = {
 
 // ================================================================ HIGH SCORES
 const hiScoreScene = {
-  sel: 0, menuMusic: true,
+  sel: 0, menuMusic: true, banner: true,
   update() {
     if (wasPressed('R')) this.sel = (this.sel + 1) % 12;
     if (wasPressed('L')) this.sel = (this.sel + 11) % 12;
@@ -259,26 +274,29 @@ const hiScoreScene = {
   },
   draw() {
     ui.fillStyle = '#000'; ui.fillRect(0, 0, W, H);
-    drawTitle();
-    text(D.lang[96], W / 2, 54, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
-    text(D.tracks[this.sel].name, W / 2, 78, 5, COL_WHITE, 'bold 14px Arial, sans-serif');
+    drawTitle(D.lang[96]);              // "High scores" inside the sliding banner
+    const V = R3D._bannerV, settled = V <= 0;
+    const slide = Math.round(V * 6);
+    text(D.tracks[this.sel].name, W / 2 - slide, 76, 5, COL_WHITE, 'bold 14px Arial, sans-serif');
     const sv = S();
-    let y = 106;
+    let y = 112;
     for (let i = 0; i < 5; i++) {
-      text((i + 1) + '.', 44, y, 8, COL_TEXT, 'bold 13px Arial, sans-serif');
-      text(sv.names[this.sel][i].substring(0, 12), 56, y, 0, COL_TEXT, 'bold 13px Arial, sans-serif');
-      text(fmtTime(sv.scores[this.sel][i]), W - 8, y, 8, COL_TEXT, 'bold 13px Arial, sans-serif');
+      text((i + 1) + '.', 52, y, 0, COL_TEXT, 'bold 13px Arial, sans-serif');
+      text(sv.names[this.sel][i].substring(0, 12), 72, y, 0, COL_TEXT, 'bold 13px Arial, sans-serif');
+      text(fmtTime(sv.scores[this.sel][i]), W - 30, y, 8, COL_TEXT, 'bold 13px Arial, sans-serif');
       y += 22;
     }
-    ui.drawImage(R3D._arrowL, 20, 130);
-    ui.drawImage(R3D._arrowR, W - 30, 130);
+    if (settled) {
+      ui.drawImage(R3D._arrowL, 20, 84);
+      ui.drawImage(R3D._arrowR, W - 30, 84);
+    }
     softkeys(D.lang[103], D.lang[92]);
   },
 };
 
 // ================================================================ SETTINGS
 const settingsScene = {
-  sel: 0, menuMusic: true,
+  sel: 0, menuMusic: true, banner: true,
   items() {
     const st = S().settings;
     return [
@@ -311,7 +329,7 @@ const settingsScene = {
 
 // ================================================================ INSTRUCTIONS
 const instructionsScene = {
-  page: 0, menuMusic: true,
+  page: 0, menuMusic: true, banner: true,
   pages() { return [D.lang[0], D.lang[1], D.lang[2], D.lang[3]]; },
   update() {
     if (wasPressed('R') || wasPressed('D')) { this.page = (this.page + 1) % 4; }
@@ -320,10 +338,9 @@ const instructionsScene = {
   },
   draw() {
     ui.fillStyle = '#000'; ui.fillRect(0, 0, W, H);
-    drawTitle();
-    text(D.lang[99], W / 2, 54, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
+    drawTitle(D.lang[99]);              // "Instructions" inside the sliding banner
     const words = this.pages()[this.page].split(' ');
-    let line = '', y = 78;
+    let line = '', y = 84;
     for (const w of words) {
       const t2 = line + w + ' ';
       if (ui.measureText(t2).width > W - 36) {
@@ -339,7 +356,7 @@ const instructionsScene = {
 
 // ================================================================ RESULTS
 const resultsScene = {
-  menuMusic: true, musicT: 0,
+  menuMusic: true, banner: true, musicT: 0,
   enter() { AudioSys.stopMusic(); this.musicT = 2.0; },
   update(dt) {
     if (this.musicT > 0) this.musicT -= dt;   // title restarts after the goal jingle
@@ -369,45 +386,6 @@ const resultsScene = {
 R3D.STAT_TOP = [60, 68, 75, 80];
 R3D.STAT_ACC = [20, 60, 90, 80];
 R3D.STAT_GRIP = [40, 80, 80, 90];
-
-// MODDED SHOWROOM: mouse drag-to-spin with release momentum (not in the
-// original game - a deliberate difference). Horizontal drag rotates the car
-// around its vertical axis; the flick velocity carries over after release and
-// decays back to the automatic 250 deg/s turntable spin.
-(function dragSpin() {
-  const cv = document.getElementById('ui');
-  const SENS = 1.8;                       // deg per canvas pixel
-  let drag = null;
-  cv.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'mouse' || e.button !== 0) return;
-    if (R3D.activeScene !== carSelectScene) return;
-    drag = { id: e.pointerId, lastX: e.clientX, lastT: performance.now(), vel: 0 };
-    carSelectScene.dragging = true;
-    carSelectScene.spinV = 0;
-    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
-    e.preventDefault();
-  }, { passive: false });
-  cv.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    const now = performance.now();
-    const dts = Math.max(1, now - drag.lastT) / 1000;
-    const rect = cv.getBoundingClientRect();
-    const dx = (e.clientX - drag.lastX) * (R3D.W / rect.width);
-    const dyaw = dx * SENS;
-    carSelectScene.yaw = (carSelectScene.yaw + dyaw) % 360;
-    drag.vel = drag.vel * 0.65 + (dyaw / dts) * 0.35;    // smoothed flick velocity
-    drag.lastX = e.clientX; drag.lastT = now;
-    e.preventDefault();
-  }, { passive: false });
-  const end = (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    carSelectScene.spinV = Math.max(-900, Math.min(900, drag.vel));
-    carSelectScene.dragging = false;
-    drag = null;
-  };
-  cv.addEventListener('pointerup', end);
-  cv.addEventListener('pointercancel', end);
-})();
 R3D.titleScene = titleScene;
 R3D.resultsScene = resultsScene;
 R3D.nextRaceScene = nextRaceScene;
