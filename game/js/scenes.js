@@ -240,15 +240,19 @@ const carSelectScene = {
       const msgs = ['4x ' + D.lang[8], '8x ' + D.lang[60], '12x ' + D.lang[28]];
       text(D.lang[0].split('.')[0] + '.', 16, 70, 0, COL_GREY, 'bold 11px Arial, sans-serif');
     } else {
-      // stat bars at the very bottom, original layout (label x=5, bar right half)
+      // stat bars, original layout (h.java a(Graphics): rows start at
+      // u - cG - w*3 - 2 = 213, one font height (15) apart, bar border at y+4
+      // and red/yellow fill at y+5) - the bottom row then clears the
+      // Select/Back softkey row (~y282) instead of colliding with it.
+      // Label left x=5, black-edged bar on the right half x=120 w=114.
       const bars = [[D.lang[65], R3D.STAT_TOP], [D.lang[4], R3D.STAT_ACC], [D.lang[30], R3D.STAT_GRIP]];
-      let y = 250;
+      let y = H - 60 - 45 - 2;
       for (const [label, stat] of bars) {
-        text(label, 5, y, 0, COL_TEXT, 'bold 12px Arial, sans-serif');
-        ui.fillStyle = '#000'; ui.fillRect(119, y + 3, 116, 6);
-        ui.fillStyle = '#ff0000'; ui.fillRect(120, y + 4, 114, 4);
-        ui.fillStyle = '#ffffaa'; ui.fillRect(120, y + 4, 114 * stat[this.sel] / 100, 4);
-        y += 18;
+        text(label, 5, y, 0, COL_TEXT, 'bold 13px Arial, sans-serif');
+        ui.fillStyle = '#000'; ui.fillRect(119, y + 4, 116, 6);
+        ui.fillStyle = '#ff0000'; ui.fillRect(120, y + 5, 114, 4);
+        ui.fillStyle = '#ffffaa'; ui.fillRect(120, y + 5, 114 * stat[this.sel] / 100, 4);
+        y += 15;
       }
     }
     ui.drawImage(R3D._arrowL, 8, 140);
@@ -293,8 +297,10 @@ const settingsScene = {
   items() {
     const st = S().settings;
     return [
-      { label: D.lang[63] + ': ' + [D.lang[64], D.lang[62], D.lang[61]][st.sound] },
-      { label: D.lang[65] + ': ' + [D.lang[66], D.lang[67]][st.units] },
+      // the jar's strings are already complete ("Sound: low", "Speed: km/h") -
+      // render them as-is instead of prefixing a second label
+      { label: [D.lang[64], D.lang[62], D.lang[61]][st.sound] },
+      { label: [D.lang[66], D.lang[67]][st.units] },
       { label: [D.lang[5], D.lang[6]][st.auto] },
       // MODIFIED-GAME: title-song synth switch, labelled by ENGINE name
       // (TinySoundFont = libmidi.wasm core, TinySynth = g200kg webaudio-tinysynth)

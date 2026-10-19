@@ -5,7 +5,7 @@ directly in JavaScript + Three.js using the real assets extracted from your
 original jar — actual car model, textures, sprites, MIDI music, track data,
 UI text, medal times and unlock rules. No Java, no emulation, no camera bug.
 
-This build includes all gameplay fixes through **v9** (see changelog).
+This build includes all gameplay fixes through **v10** (see changelog).
 
 - **Camera follows the car** — authentic chase-cam lag (yaw lerps at /6 per
   frame like the original), the car itself moves and rotates while steering.
@@ -63,7 +63,22 @@ Touch zones are enabled automatically on phones/tablets.
 
 ## Changelog
 
-### v9 (current)
+### v10 (current)
+- **Car select: stat bars aligned to the original layout** - the Speed/Acc./
+  Grip rows sat at the very bottom edge and the Grip bar collided with the
+  Select/Back softkey labels. They now use the original's exact rows
+  (y = 213/228/243, one font height apart, bar border/fill offsets as in
+  h.java), well clear of the softkeys.
+- **Pause menu: new Settings page** with the two race-relevant options:
+  *Auto acceleration* (off/on) and *Speed units* (km/h / mph). It edits the
+  same saved settings as the main Settings menu, so toggles apply to the
+  live race immediately (the HUD switches to Mph on the spot) and persist.
+  Back returns to the pause menu; Continue / Restart / Quit unchanged.
+- **Main Settings labels cleaned**: the jar's option strings are already
+  complete ("Sound: low", "Speed: km/h"), so the duplicated prefixes
+  ("Sound: normal: Sound: loud", "Speed:: Speed: km/h") are gone.
+
+### v9
 - **Championship hub: the spinning showroom car removed** (it was never
   requested). The hub is now a plain menu - the blue title backdrop with the
   checkered banners, "Championship:" in the top banner, and the single

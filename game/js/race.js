@@ -83,7 +83,7 @@ const raceScene = {
     R3D.scene3d = sc;
     this.tc = THEMES[this.theme];
     this.phase = 'prerace';
-    this.paused = false; this.pauseSel = 0;
+    this.paused = false; this.pauseSel = 0; this.pausePage = 0;
     this.timeT = 0; this.cpNext = 0; this.finished = false;
     this.splitT = 0; this.goT = 0;
     this.checkpoints = this.track.checkpoints;
@@ -121,7 +121,7 @@ const raceScene = {
     if (this.paused) { this.pauseInput(); return; }
     if ((this.phase === 'racing' || this.phase === 'countdown') &&
         (wasPressed('RS') || wasPressed('LS'))) {
-      this.paused = true; this.pauseSel = 0;
+      this.paused = true; this.pauseSel = 0; this.pausePage = 0;
       AudioSys.stopMusic();          // resume restarts the race music
       return;
     }
@@ -173,14 +173,32 @@ const raceScene = {
     }
   },
 
-  // ---- pause menu input (items: Continue / Restart / Quit race) ----
+  // ---- pause menu input ----
+  // Main page: Continue / Settings / Restart / Quit race. The Settings page
+  // (MODIFIED-GAME) holds the two race-relevant options - auto acceleration
+  // and speed units. It edits the SAME save settings as the main Settings
+  // menu, so toggles take effect in the live race (physics reads auto every
+  // step, the HUD reads units every frame) and persist across sessions.
   pauseInput() {
-    if (wasPressed('U') || wasPressed('L')) this.pauseSel = (this.pauseSel + 2) % 3;
-    if (wasPressed('D') || wasPressed('R')) this.pauseSel = (this.pauseSel + 1) % 3;
+    if (this.pausePage === 1) {                // in-race settings (2 options)
+      if (wasPressed('U') || wasPressed('L') || wasPressed('D') || wasPressed('R'))
+        this.pauseSel = (this.pauseSel + 1) % 2;
+      if (wasPressed('RS')) { this.pausePage = 0; this.pauseSel = 1; return; }
+      if (wasPressed('F') || wasPressed('LS')) {
+        const st = S().settings;
+        if (this.pauseSel === 0) st.auto = (st.auto + 1) % 2;
+        else st.units = (st.units + 1) % 2;
+        R3D.persist();
+      }
+      return;
+    }
+    if (wasPressed('U') || wasPressed('L')) this.pauseSel = (this.pauseSel + 3) % 4;
+    if (wasPressed('D') || wasPressed('R')) this.pauseSel = (this.pauseSel + 1) % 4;
     if (wasPressed('RS')) { this.resumeRace(); return; }
     if (wasPressed('F') || wasPressed('LS')) {
       if (this.pauseSel === 0) this.resumeRace();
-      else if (this.pauseSel === 1) {          // restart from the pre-race screen
+      else if (this.pauseSel === 1) { this.pausePage = 1; this.pauseSel = 0; }
+      else if (this.pauseSel === 2) {          // restart from the pre-race screen
         this.paused = false;
         R3D.clearScene3d();
         R3D.setScene(R3D.raceScene);
@@ -635,8 +653,19 @@ const raceScene = {
     if (this.paused) {
       ui.fillStyle = 'rgba(0,0,0,0.6)';
       ui.fillRect(0, 0, W, H);
-      text('Paused', W / 2, 76, 5, '#ffffff', 'bold 20px Arial, sans-serif');
-      const items = [D.lang[94], 'Restart', 'Quit race'];   // Continue / Restart / Quit
+      let items;
+      if (this.pausePage === 1) {
+        // in-race settings: auto acceleration + speed units
+        text(D.lang[107], W / 2, 76, 5, '#ffffff', 'bold 20px Arial, sans-serif');
+        const st = S().settings;
+        items = [
+          [D.lang[5], D.lang[6]][st.auto],                 // Auto acceleration: off/on
+          [D.lang[66], D.lang[67]][st.units],              // Speed: km/h | Speed: mph
+        ];
+      } else {
+        text('Paused', W / 2, 76, 5, '#ffffff', 'bold 20px Arial, sans-serif');
+        items = [D.lang[94], D.lang[107], 'Restart', 'Quit race'];   // Continue / Settings / Restart / Quit
+      }
       let py = 130;
       for (let i = 0; i < items.length; i++) {
         text(items[i], W / 2, py, 5, i === this.pauseSel ? '#ffffff' : '#ffffaa', 'bold 15px Arial, sans-serif');
