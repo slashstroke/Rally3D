@@ -5,7 +5,7 @@ directly in JavaScript + Three.js using the real assets extracted from your
 original jar — actual car model, textures, sprites, MIDI music, track data,
 UI text, medal times and unlock rules. No Java, no emulation, no camera bug.
 
-This build includes all gameplay fixes through **v7** (see changelog).
+This build includes all gameplay fixes through **v9** (see changelog).
 
 - **Camera follows the car** — authentic chase-cam lag (yaw lerps at /6 per
   frame like the original), the car itself moves and rotates while steering.
@@ -63,7 +63,35 @@ Touch zones are enabled automatically on phones/tablets.
 
 ## Changelog
 
-### v7 (current)
+### v9 (current)
+- **Championship hub: the spinning showroom car removed** (it was never
+  requested). The hub is now a plain menu - the blue title backdrop with the
+  checkered banners, "Championship:" in the top banner, and the single
+  "Next race" item dead-centre on the screen. Navigation is unchanged:
+  OK / Enter = next race, Back = New game menu.
+- **Title song switch now labelled by engine name**: the Settings item reads
+  "Title song: TinySoundFont / TinySynth" instead of "Original / Claude".
+  TinySoundFont = the libmidi.wasm synth this port has always used;
+  TinySynth = the webaudio-tinysynth wavetable synth (with its own reverb)
+  from the other port. Same two renditions and the same saved switch as v8 -
+  only the labels changed. Nothing else was taken from the other port.
+
+### v8
+- **Championship hub redesigned**: the earned-trophy grid is gone; the screen
+  now shows the "Next race" heading centred in the middle with the selected
+  car spinning on its podium over the blue streak backdrop, like the original
+  hub. Pressing Back (right softkey / Escape) in the hub now correctly returns
+  to the New game menu instead of bouncing to track select and back.
+- **Title song switch (Settings)**: the same original `title.mid` was rendered
+  by two different General-MIDI synthesizers in the two browser ports — this
+  build uses libmidi (TinySoundFont core), the other port uses
+  webaudio-tinysynth with its own wavetable and reverb, which is why the
+  melody sounds different. Settings now has a "Title song: Original / Claude"
+  item: Original plays the libmidi rendition (as before), Claude plays the
+  webaudio-tinysynth rendition (soft synth with reverb). The choice is saved,
+  and toggling restarts the menu music immediately.
+
+### v7
 - **"Pushed/dragged to one side" fixed (the invisible-wall misfire)**: the
   port tested wall edges within a window that follows the track's ARC, so on
   curved sections an edge from a completely different part of the track (up to

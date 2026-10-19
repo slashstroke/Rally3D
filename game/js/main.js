@@ -116,7 +116,7 @@ function defSave() {
     cars: [0, 1, 1, 1],
     names, scores,
     champ: 0,
-    settings: { sound: 2, units: 0, auto: 0 },
+    settings: { sound: 2, units: 0, auto: 0, titleSong: 0 },
     name: D.lang[68],
   };
 }
@@ -155,6 +155,7 @@ const AudioSys = R3D.audio = {
   ctx: null, music: null, _fx: null, vol: 0.8,
   midiLib: null, musicPlayer: null, sfxPlayer: null, midiBufs: {}, midiFailed: false,
   _pending: null, _starting: false,
+  tiny: null, tinyFailed: false, _tinyPending: null,   // alternate title-song synth
   ensure() {
     if (!this.ctx) {
       try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
@@ -166,6 +167,53 @@ const AudioSys = R3D.audio = {
     } else if (this.ctx && this.ctx.state === 'running') {
       this._flushPending();
     }
+    // the alternate synth owns its own AudioContext — keep it alive too
+    if (this.tiny && this.tiny.actx) {
+      const ta = this.tiny.actx;
+      if (ta.state === 'suspended') ta.resume().then(() => this._flushTinyPending()).catch(() => {});
+      else if (ta.state === 'running') this._flushTinyPending();
+    }
+  },
+  _flushTinyPending() {
+    if (this._tinyPending) {
+      const p = this._tinyPending; this._tinyPending = null;
+      this.play(p.name, p.loop, p.vol);
+    }
+  },
+  // webaudio-tinysynth (the "TinySynth" title-song engine): the very same
+  // original title.mid rendered by a different General-MIDI wavetable synth
+  // with its own reverb — this is what makes that rendition sound distinct.
+  async initTiny() {
+    if (this.tiny || this.tinyFailed) return this.tiny;
+    try {
+      if (!window.WebAudioTinySynth) throw new Error('no tinysynth');
+      this.tiny = new window.WebAudioTinySynth({ quality: 1, useReverb: 1, voices: 48 });
+    } catch (e) { this.tinyFailed = true; }
+    return this.tiny;
+  },
+  async playTinyMidi(name, loop, vol) {
+    const t = await this.initTiny();
+    if (!t) return false;
+    try {
+      const buf = await this._midiBuf(name);
+      const start = () => {
+        t.setMasterVol(Math.min(1, vol * 1.2));
+        t.stopMIDI();
+        t.loadMIDI(buf.slice(0));
+        t.loop = loop ? 1 : 0;
+        t.playTick = 0; t.playIndex = 0;
+        t.playMIDI();
+        this.music = { tiny: t };
+      };
+      if (!t.actx || t.actx.state !== 'running') {
+        // its context starts suspended until a user gesture — queue + resume
+        this._tinyPending = { name, loop, vol };
+        if (t.actx) t.actx.resume().then(() => this._flushTinyPending()).catch(() => {});
+        return true;
+      }
+      start();
+      return true;
+    } catch (e) { return false; }
   },
   _flushPending() {
     if (this._pending) {
@@ -232,7 +280,10 @@ const AudioSys = R3D.audio = {
       this._starting = true;
       this.stopMusic();
     }
-    this.playMidi(name, loop, v).then((ok) => {
+    const route = (name === 'title' && save.settings.titleSong === 1)
+      ? this.playTinyMidi(name, loop, v)
+      : this.playMidi(name, loop, v);
+    route.then((ok) => {
       if (loop) this._starting = false;
       if (ok || save.settings.sound === 0) return;
       // OGG fallback
@@ -245,6 +296,7 @@ const AudioSys = R3D.audio = {
     });
   },
   stopMusic() {
+    if (this.tiny) { try { this.tiny.stopMIDI(); } catch (e) {} }
     if (this.music) {
       if (this.music.midi) { try { this.music.midi.stop(); } catch (e) {} }
       else if (this.music.pause) { try { this.music.pause(); } catch (e) {} }

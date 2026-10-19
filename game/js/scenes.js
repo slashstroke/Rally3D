@@ -70,38 +70,31 @@ const newGameScene = {
 };
 
 // ================================================================ NEXT RACE (championship hub)
+// Per user request: plain hub — no trophies, NO showroom car. Just the title
+// backdrop with the checkered banners, "Championship:" in the top banner and
+// the single "Next race" item dead-centre on the screen (y=160 = middle of
+// both the screen and the free band between the banners).
 const nextRaceScene = {
   menuMusic: true, banner: true,
   enter() {
-    R3D.clearScene3d();
+    R3D.clearScene3d();          // drop any 3D scene left over from a race
+    // reset the shared camera (it may be stale after a race)
+    camera.position.set(0, 0, 0);
+    camera.rotation.set(0, 0, 0);
   },
   update() {
-    if (wasPressed('F') || wasPressed('L') || wasPressed('RS')) {
+    // F/Select = "Next race"; RS/Back returns to the mode menu (original
+    // h.java a(boolean): the hub is nested inside the new-game menu loop)
+    if (wasPressed('F') || wasPressed('L')) {
       R3D.game.mode = 'champ';
       R3D.game.raceIdx = S().champ % 12;
       R3D.setScene(trackSelectScene);
     }
+    if (wasPressed('RS')) R3D.setScene(newGameScene);
   },
   draw() {
-    ui.fillStyle = '#000'; ui.fillRect(0, 0, W, H);
-    drawTitle(D.lang[15]);               // "Championship" inside the sliding banner
-    // MODIFIED-GAME: no 5/12 progress counter and no track name — just the
-    // "Next race" heading with the earned trophies below, each row centred.
-    text(D.lang[41], W / 2, 116, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
-    const cups = R3D._cupImgs;
-    const rows = [[], []];
-    for (let i = 0; i < 12; i++) if (S().medals[i] <= 2) rows[i < 6 ? 0 : 1].push(i);
-    let ty = 168;
-    for (const row of rows) {
-      if (row.length) {
-        const x0 = Math.round((W - (row.length * 28 - 10)) / 2);   // centred: n*28-10 wide
-        for (let k = 0; k < row.length; k++) {
-          const m = S().medals[row[k]];
-          if (cups[m]) ui.drawImage(cups[m], x0 + k * 28, ty);
-        }
-      }
-      ty += 30;
-    }
+    drawTitle(D.lang[15]);       // backdrop + banners + "Championship:" header
+    text(D.lang[41], W / 2, 160, 5, COL_TEXT, 'bold 17px Arial, sans-serif');
     softkeys(D.lang[103], '');
   },
 };
@@ -303,6 +296,9 @@ const settingsScene = {
       { label: D.lang[63] + ': ' + [D.lang[64], D.lang[62], D.lang[61]][st.sound] },
       { label: D.lang[65] + ': ' + [D.lang[66], D.lang[67]][st.units] },
       { label: [D.lang[5], D.lang[6]][st.auto] },
+      // MODIFIED-GAME: title-song synth switch, labelled by ENGINE name
+      // (TinySoundFont = libmidi.wasm core, TinySynth = g200kg webaudio-tinysynth)
+      { label: 'Title song: ' + (st.titleSong === 1 ? 'TinySynth' : 'TinySoundFont') },
       { label: D.lang[52] },
     ];
   },
@@ -316,6 +312,11 @@ const settingsScene = {
       if (this.sel === 0) { st.sound = (st.sound + 1) % 3; if (st.sound === 0) AudioSys.stopMusic(); }
       else if (this.sel === 1) st.units = (st.units + 1) % 2;
       else if (this.sel === 2) st.auto = (st.auto + 1) % 2;
+      else if (this.sel === 3) {
+        st.titleSong = (st.titleSong === 1) ? 0 : 1;
+        // restart the looping menu music so the switch is heard immediately
+        if (AudioSys.music) AudioSys.stopMusic();
+      }
       else R3D.saveReset();
       R3D.persist();
     }
